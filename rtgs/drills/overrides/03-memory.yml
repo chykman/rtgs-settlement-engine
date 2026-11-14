@@ -1,0 +1,4 @@
+services:
+  rtgs-core:
+    mem_limit: 24m
+    memswap_limit: 24m

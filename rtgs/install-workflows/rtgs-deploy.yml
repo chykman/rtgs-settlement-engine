@@ -1,0 +1,90 @@
+name: Deploy RTGS to Vagrant VM
+
+# Manual trigger only, and only from main: this job runs on the self-hosted VM and sees the secrets.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-rtgs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, vagrant]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rtgs
+    env:
+      GIT_SHA: ${{ github.sha }}
+      COMPOSE_PROJECT_NAME: rtgs
+      POSTGRES_PASSWORD: ${{ secrets.RTGS_POSTGRES_PASSWORD }}
+      INTERNAL_TOKEN: ${{ secrets.RTGS_INTERNAL_TOKEN }}
+      BANK_KEYS: ${{ secrets.RTGS_BANK_KEYS }}
+      OPERATOR_KEY: ${{ secrets.RTGS_OPERATOR_KEY }}
+      KAFKA_CLUSTER_ID: ${{ secrets.RTGS_KAFKA_CLUSTER_ID }}
+      KAFKA_ADMIN_PASSWORD: ${{ secrets.RTGS_KAFKA_ADMIN_PASSWORD }}
+      KAFKA_APP_PASSWORD: ${{ secrets.RTGS_KAFKA_APP_PASSWORD }}
+      # Test environment only: the sample console needs these. Never set them in anything real.
+      DEMO_MODE: "true"
+      ALLOW_RESET: "true"
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Check required secrets
+        run: |
+          missing=0
+          for v in POSTGRES_PASSWORD INTERNAL_TOKEN BANK_KEYS OPERATOR_KEY KAFKA_CLUSTER_ID KAFKA_ADMIN_PASSWORD KAFKA_APP_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "::error::Repo secret RTGS_$v is missing"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Validate compose file
+        run: docker compose config --quiet
+
+      - name: Build images
+        run: docker compose build --pull
+
+      # No -v: the ledger volume (rtgsdata) survives every deploy.
+      - name: Stop old containers
+        run: docker compose down --remove-orphans
+
+      - name: Start new containers
+        run: docker compose up -d --wait --wait-timeout 120
+
+      - name: Verify the new commit is live
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:8081/version.txt | grep -q "$GIT_SHA"; then
+              echo "Frontend is serving $GIT_SHA"; break
+            fi
+            if [ "$i" = 20 ]; then echo "Frontend never served $GIT_SHA"; docker compose logs --tail=50; exit 1; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8081/api/health
+
+      - name: Settlement smoke test
+        run: |
+          op_key="$OPERATOR_KEY"
+          body='{"msgId":"SMOKE-1","creditTransfer":{"endToEndId":"SMOKE-'"${GIT_SHA:0:12}"'","amount":{"value":"1.00","currency":"XTS"},"debtorAgent":"BANKA","creditorAgent":"BANKB","priority":"NORM"}}'
+          status=$(curl -fsS -X POST http://localhost:8081/api/v1/payments \
+            -H "x-api-key: $op_key" -H "Idempotency-Key: smoke-$GIT_SHA" -H 'Content-Type: application/json' \
+            -d "$body" | jq -r .status)
+          echo "Payment status: $status"
+          [ "$status" = "SETTLED" ]
+          curl -fsS http://localhost:8081/api/v1/operator/reconcile -H "x-api-key: $op_key" | jq -e '.ok == true' >/dev/null
+          echo "Books reconcile after deploy"
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Clean up dangling images
+        if: always()
+        run: docker image prune -f

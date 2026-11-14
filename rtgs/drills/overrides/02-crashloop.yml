@@ -1,0 +1,5 @@
+# Drill override - do not read before attempting the drill.
+services:
+  rtgs-core:
+    environment:
+      DATABASE_URL: postgres://rtgs:${POSTGRES_PASSWORD}@db-primary:5432/rtgs

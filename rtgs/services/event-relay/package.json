@@ -1,0 +1,15 @@
+{
+  "name": "rtgs-event-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Transactional-outbox relay (Postgres -> Kafka) and Kafka -> Postgres message sink",
+  "scripts": {
+    "start": "node src/run-relay.js",
+    "start:consumer": "node src/run-consumer.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "pg": "^8.23.1"
+  }
+}

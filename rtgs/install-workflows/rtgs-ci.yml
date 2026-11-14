@@ -1,0 +1,143 @@
+name: RTGS CI
+
+# GitHub-hosted runners ONLY (PR code never touches the self-hosted VM).
+# No `paths:` filter on purpose: if you later mark these jobs as required checks, a path-filtered
+# workflow that is skipped leaves the check "pending" forever and blocks unrelated PRs.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rtgs-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rtgs-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfiles (hadolint)
+        run: |
+          for f in rtgs/services/rtgs-core/Dockerfile rtgs/services/bank-gateway/Dockerfile rtgs/services/event-relay/Dockerfile \n                   rtgs/services/kafka/Dockerfile rtgs/services/db/Dockerfile rtgs/web/Dockerfile; do
+            docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --failure-threshold warning - < "$f"
+          done
+
+      - name: Validate compose file and drill overrides
+        working-directory: rtgs
+        run: |
+          docker compose --env-file .env.example config --quiet
+          for o in drills/overrides/*.yml; do
+            docker compose -f docker-compose.yml -f "$o" --env-file .env.example config --quiet
+          done
+
+  rtgs-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rtgs
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: rtgs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rtgs -d rtgs"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://rtgs:ci-only@127.0.0.1:5432/rtgs
+    defaults:
+      run:
+        working-directory: rtgs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            rtgs/services/rtgs-core/package-lock.json
+            rtgs/services/bank-gateway/package-lock.json
+            rtgs/services/event-relay/package-lock.json
+      - run: npm ci --prefix services/rtgs-core
+      - run: npm ci --prefix services/bank-gateway
+      - run: npm ci --prefix services/event-relay
+      - name: Core tests (ledger invariants, concurrency, atomicity)
+        run: npm run test:core
+      - name: Event relay tests (outbox publish, broker outage, idempotent sink)
+        run: npm run test:events
+      - name: Gateway tests
+        run: npm run test:gateway
+      - name: End-to-end tests (gateway to core to Postgres)
+        run: npm run test:e2e
+      - name: Audit production dependencies
+        run: |
+          npm audit --omit=dev --audit-level=high --prefix services/rtgs-core
+          npm audit --omit=dev --audit-level=high --prefix services/bank-gateway
+          npm audit --omit=dev --audit-level=high --prefix services/event-relay
+
+  rtgs-build-and-scan:
+    needs: [rtgs-lint, rtgs-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker build -t rtgs-core:ci ./rtgs/services/rtgs-core
+          docker build -t rtgs-gateway:ci ./rtgs/services/bank-gateway
+          docker build -t rtgs-events:ci ./rtgs/services/event-relay
+          docker build -t rtgs-kafka:ci ./rtgs/services/kafka
+          docker build -t rtgs-db:ci -f ./rtgs/services/db/Dockerfile ./rtgs/services
+          docker build -t rtgs-web:ci ./rtgs/web
+
+      - name: Scan core image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-core:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan gateway image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-gateway:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan web image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-web:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan event-relay image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-events:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Report-only: the pinned Kafka release bundles third-party jars that may carry fixed CVEs.
+      # Bump KAFKA_VERSION in services/kafka/Dockerfile, then flip this to exit-code "1".
+      - name: Scan kafka image (Trivy, report only)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-kafka:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"

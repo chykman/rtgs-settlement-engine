@@ -1,0 +1,16 @@
+# Local Kubernetes (K3s in Docker). The cluster is disposable: `make down && make up` rebuilds it,
+# and ArgoCD restores everything else from Git.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: rtgs
+servers: 1
+agents: 2
+ports:
+  - port: 8081:80          # codespace port 8081 -> cluster ingress (RTGS console, later)
+    nodeFilters: [loadbalancer]
+options:
+  k3s:
+    extraArgs:
+      - arg: --disable=metrics-server
+        nodeFilters: [server:*]

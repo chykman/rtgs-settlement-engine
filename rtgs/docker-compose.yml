@@ -1,0 +1,101 @@
+# RTGS test platform. Only `web` is published; the core and the database live on a private network.
+name: ${COMPOSE_PROJECT_NAME:-rtgs}
+
+services:
+  db:
+    build: { context: ./services, dockerfile: db/Dockerfile }   # healthcheck + init scripts live in the image
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes: [rtgsdata:/var/lib/postgresql/data]
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend]
+
+  kafka:
+    build: { context: ./services/kafka }
+    restart: unless-stopped
+    stop_grace_period: 60s             # clean shutdown avoids a long log recovery on restart
+    read_only: true
+    tmpfs: ["/tmp:exec,mode=1777,size=256m"]   # exec: the JVM loads native compression libs from here
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      KAFKA_CLUSTER_ID: ${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID}
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?set KAFKA_ADMIN_PASSWORD}
+      KAFKA_APP_PASSWORD: ${KAFKA_APP_PASSWORD:?set KAFKA_APP_PASSWORD}
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-SASL_PLAINTEXT}
+    volumes: [kafkadata:/var/lib/kafka]
+    networks: [backend]                # NOT reachable from the host
+
+  event-relay:                         # transactional outbox: Postgres -> Kafka
+    build: { context: ./services/event-relay, args: { GIT_SHA: "${GIT_SHA:-dev}" } }
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment: &events-env
+      DATABASE_URL: postgres://rtgs:${POSTGRES_PASSWORD}@db:5432/rtgs
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-SASL_PLAINTEXT}
+      KAFKA_USERNAME: rtgs
+      KAFKA_PASSWORD: ${KAFKA_APP_PASSWORD}
+    depends_on:
+      rtgs-core: { condition: service_healthy }    # core applies the migrations (outbox table)
+      kafka: { condition: service_healthy }
+    networks: [backend]
+
+  event-consumer:                      # Kafka -> Postgres message_store (idempotent)
+    build: { context: ./services/event-relay, args: { GIT_SHA: "${GIT_SHA:-dev}" } }
+    command: ["node", "src/run-consumer.js"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment: *events-env
+    depends_on:
+      rtgs-core: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      event-relay: { condition: service_started }  # relay creates the topic
+    networks: [backend]
+
+  rtgs-core:
+    build: { context: ./services/rtgs-core, args: { GIT_SHA: "${GIT_SHA:-dev}" } }
+    restart: unless-stopped
+    stop_grace_period: 15s             # let in-flight settlements finish on SIGTERM
+    environment:
+      DATABASE_URL: postgres://rtgs:${POSTGRES_PASSWORD}@db:5432/rtgs
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN}
+      ALLOW_RESET: ${ALLOW_RESET:-false}
+      PORT: "4000"
+    depends_on: { db: { condition: service_healthy } }
+    networks: [backend]                # NOT reachable from the host or from web
+
+  bank-gateway:
+    build: { context: ./services/bank-gateway, args: { GIT_SHA: "${GIT_SHA:-dev}" } }
+    restart: unless-stopped
+    environment:
+      CORE_URL: http://rtgs-core:4000
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      BANK_KEYS: ${BANK_KEYS:?set BANK_KEYS}
+      OPERATOR_KEY: ${OPERATOR_KEY:?set OPERATOR_KEY}
+      DEMO_MODE: ${DEMO_MODE:-false}   # exposes /v1/demo/keys for the sample dashboard - test env only
+      PORT: "3000"
+    depends_on: { rtgs-core: { condition: service_healthy } }
+    networks: [backend, frontend]
+
+  web:
+    build: { context: ./web, args: { GIT_SHA: "${GIT_SHA:-dev}" } }
+    restart: unless-stopped
+    ports: ["8081:80"]
+    depends_on: { bank-gateway: { condition: service_healthy } }
+    networks: [frontend]
+
+networks:
+  backend: { internal: true }          # no route to the outside world
+  frontend: {}
+
+volumes:
+  rtgsdata:
+  kafkadata:

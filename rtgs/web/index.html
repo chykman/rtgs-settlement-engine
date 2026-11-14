@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTGS Test Console</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#667085; --line:#e4e7ec; --accent:#1f5eff;
+          --ok:#127a45; --okbg:#e3f6ec; --warn:#9a5b00; --warnbg:#fff1d6; --bad:#b42318; --badbg:#fde7e4; --gray:#475467; --graybg:#eef0f3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --card:#171b21; --ink:#eceff4; --muted:#9aa4b2; --line:#2a313b; --accent:#6c9bff;
+          --ok:#5fd39b; --okbg:#12301f; --warn:#f5b84b; --warnbg:#35280d; --bad:#ff8a7d; --badbg:#3a1714; --gray:#b7c0cc; --graybg:#222831; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .banner { background:var(--warnbg); color:var(--warn); text-align:center; padding:6px 16px; font-size:12px; letter-spacing:.02em; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .grid { display:grid; gap:12px; }
+  .accounts { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-bottom:12px; }
+  .acct .name { color:var(--muted); font-size:12px; }
+  .acct .bal { font-size:22px; font-variant-numeric:tabular-nums; font-weight:650; margin:2px 0; }
+  .acct .sub { font-size:12px; color:var(--muted); }
+  .acct .q { color:var(--warn); }
+  .two { grid-template-columns: 1fr; } @media (min-width: 900px) { .two { grid-template-columns: 360px 1fr; } }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+  select, input { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+  .f { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
+  button { padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:transparent; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .chip { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .SETTLED { background:var(--okbg); color:var(--ok); } .QUEUED { background:var(--warnbg); color:var(--warn); }
+  .REJECTED { background:var(--badbg); color:var(--bad); } .CANCELLED { background:var(--graybg); color:var(--gray); }
+  .OPEN { background:var(--okbg); color:var(--ok); } .CLOSED { background:var(--badbg); color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th { text-align:left; font-size:11px; color:var(--muted); font-weight:600; padding:4px 6px; }
+  td { padding:6px; border-top:1px solid var(--line); white-space:nowrap; }
+  td.r, th.r { text-align:right; }
+  .scroll { overflow-x:auto; }
+  .msg { min-height:20px; font-size:12px; margin-top:8px; color:var(--muted); }
+  .msg.err { color:var(--bad); }
+  .empty { color:var(--muted); padding:8px 6px; }
+  .rec { cursor:default; }
+</style>
+</head>
+<body>
+<div class="banner">SIMULATION ONLY — fake money (XTS), fictional banks, no real payment network.</div>
+<main>
+  <header>
+    <div>
+      <h1>RTGS Test Console</h1>
+      <div class="sub" id="ver" style="color:var(--muted);font-size:12px"></div>
+    </div>
+    <div class="row">
+      <span id="recon" class="chip CANCELLED rec" title="Independent re-computation of the books">checking…</span>
+      <span id="sys" class="chip CANCELLED">…</span>
+      <button id="btnClose">End of day (close)</button>
+      <button id="btnOpen">Open</button>
+    </div>
+  </header>
+
+  <section class="grid accounts" id="accounts"></section>
+
+  <div class="grid two">
+    <section class="card">
+      <h2>Send a payment</h2>
+      <div class="f">
+        <div><label for="from">From (debtor bank)</label><select id="from"></select></div>
+        <div><label for="to">To (creditor bank)</label><select id="to"></select></div>
+      </div>
+      <div class="f">
+        <div><label for="amount">Amount (XTS)</label><input id="amount" value="1000.00" inputmode="decimal"></div>
+        <div><label for="prio">Priority</label>
+          <select id="prio"><option>NORM</option><option>HIGH</option><option>URGT</option><option>LOW</option></select></div>
+      </div>
+      <div class="row">
+        <button class="primary" id="btnSend">Submit</button>
+        <button id="btnBurst">Send 20 random</button>
+        <button id="btnReset">Reset demo</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Queue (waiting for liquidity)</h2>
+        <div class="scroll"><table><thead><tr><th>From</th><th>To</th><th class="r">Amount</th><th>Prio</th><th></th></tr></thead><tbody id="queue"></tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Recent payments</h2>
+        <div class="scroll"><table><thead><tr><th>Time</th><th>From</th><th>To</th><th class="r">Amount</th><th>Status</th><th>Reason</th></tr></thead><tbody id="recent"></tbody></table></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let KEY = null;
+
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+const fmt = (s) => Number(s).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function api(method, path, body, extraHeaders = {}) {
+  const r = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json', 'x-api-key': KEY || '', ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(data.message || data.error || r.statusText); e.data = data; throw e; }
+  return data;
+}
+
+// crypto.randomUUID() only exists in secure contexts (HTTPS or localhost); this page is served over plain HTTP
+// on the VM, so build a v4 UUID from getRandomValues, which works everywhere.
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+function say(text, err) { const m = $('msg'); m.textContent = text; m.className = 'msg' + (err ? ' err' : ''); }
+
+async function init() {
+  const keys = await (await fetch('/api/v1/demo/keys')).json();     // demo mode only
+  KEY = keys.find((k) => k.role === 'operator').key;
+  const accounts = await api('GET', '/v1/operator/accounts');
+  for (const id of ['from', 'to']) {
+    const s = $(id); s.replaceChildren(...accounts.map((a) => { const o = el('option', a.id); o.value = a.id; return o; }));
+  }
+  $('to').selectedIndex = 1;
+  const h = await (await fetch('/api/health')).json().catch(() => ({}));
+  $('ver').textContent = h.version ? `gateway version ${h.version}` : '';
+  await refresh(); setInterval(refresh, 2000);
+}
+
+function renderAccounts(list) {
+  $('accounts').replaceChildren(...list.map((a) => {
+    const c = el('div', undefined, 'card acct');
+    c.append(el('div', `${a.id} · ${a.name}`, 'name'), el('div', fmt(a.balance), 'bal'));
+    const sub = el('div', `opening ${fmt(a.openingBalance)}`, 'sub');
+    if (Number(a.queuedOutgoing) > 0) { sub.append(' · '); sub.append(el('span', `${fmt(a.queuedOutgoing)} queued out`, 'q')); }
+    c.append(sub); return c;
+  }));
+}
+
+function renderQueue(q) {
+  const tb = $('queue');
+  if (!q.length) { const tr = el('tr'); const td = el('td', 'Queue is empty', 'empty'); td.colSpan = 5; tr.append(td); return tb.replaceChildren(tr); }
+  tb.replaceChildren(...q.map((p) => {
+    const tr = el('tr');
+    tr.append(el('td', p.debtor), el('td', p.creditor), el('td', fmt(p.amount), 'r'), el('td', String(p.priority)));
+    const b = el('button', 'Cancel'); b.onclick = async () => { try { await api('POST', `/v1/payments/${p.id}/cancel`); refresh(); } catch (e) { say(e.message, true); } };
+    const td = el('td'); td.append(b); tr.append(td); return tr;
+  }));
+}
+
+function renderRecent(list) {
+  const tb = $('recent');
+  if (!list.length) { const tr = el('tr'); const td = el('td', 'No payments yet', 'empty'); td.colSpan = 6; tr.append(td); return tb.replaceChildren(tr); }
+  tb.replaceChildren(...list.map((p) => {
+    const tr = el('tr');
+    tr.append(el('td', new Date(p.createdAt).toLocaleTimeString()), el('td', p.debtor), el('td', p.creditor), el('td', fmt(p.amount), 'r'));
+    const td = el('td'); td.append(el('span', p.status, 'chip ' + p.status)); tr.append(td, el('td', p.reason || ''));
+    return tr;
+  }));
+}
+
+async function refresh() {
+  try {
+    const [acc, q, rec, sys, pays] = await Promise.all([
+      api('GET', '/v1/operator/accounts'), api('GET', '/v1/operator/queue'), api('GET', '/v1/operator/reconcile'),
+      api('GET', '/v1/operator/system'), api('GET', '/v1/operator/payments?limit=12'),
+    ]);
+    renderAccounts(acc); renderQueue(q); renderRecent(pays);
+    const r = $('recon'); r.textContent = rec.ok ? 'Books reconcile ✓' : 'RECONCILIATION FAILED'; r.className = 'chip rec ' + (rec.ok ? 'SETTLED' : 'REJECTED');
+    r.title = rec.checks.map((c) => `${c.ok ? '✓' : '✗'} ${c.name}`).join('\n');
+    const s = $('sys'); s.textContent = sys.status; s.className = 'chip ' + sys.status;
+    $('btnClose').disabled = sys.status === 'CLOSED'; $('btnOpen').disabled = sys.status === 'OPEN';
+  } catch (e) { say('Cannot reach the gateway: ' + e.message, true); }
+}
+
+async function send(from, to, amount, prio) {
+  return api('POST', '/v1/payments', {
+    msgId: 'UI-' + Date.now(),
+    creditTransfer: { endToEndId: 'E2E-' + Math.random().toString(36).slice(2, 10), amount: { value: amount, currency: 'XTS' }, debtorAgent: from, creditorAgent: to, priority: prio },
+  }, { 'idempotency-key': uuid() });
+}
+
+$('btnSend').onclick = async () => {
+  try {
+    const p = await send($('from').value, $('to').value, $('amount').value.trim(), $('prio').value);
+    say(`${p.status}${p.reason ? ' (' + p.reason + ')' : ''} — payment ${p.id.slice(0, 8)}`);
+    refresh();
+  } catch (e) { say(e.message, true); }
+};
+$('btnBurst').onclick = async () => {
+  const ids = [...$('from').options].map((o) => o.value); let ok = 0;
+  await Promise.all(Array.from({ length: 20 }, async () => {
+    const a = ids[Math.floor(Math.random() * ids.length)]; let b; do { b = ids[Math.floor(Math.random() * ids.length)]; } while (b === a);
+    const amt = (Math.floor(Math.random() * 900) * 100 + 5000).toFixed(2);
+    try { await send(a, b, amt, ['NORM', 'HIGH', 'LOW'][Math.floor(Math.random() * 3)]); ok++; } catch {}
+  }));
+  say(`Submitted ${ok}/20 random payments concurrently`); refresh();
+};
+$('btnReset').onclick = async () => { try { await api('POST', '/v1/operator/reset'); say('Demo data reset'); refresh(); } catch (e) { say(e.message, true); } };
+$('btnClose').onclick = async () => { try { const r = await api('POST', '/v1/operator/system/close'); say(`System closed; ${r.cancelled} queued payment(s) cancelled`); refresh(); } catch (e) { say(e.message, true); } };
+$('btnOpen').onclick = async () => { try { await api('POST', '/v1/operator/system/open'); say('System opened'); refresh(); } catch (e) { say(e.message, true); } };
+
+init().catch((e) => say('Startup failed: ' + e.message, true));
+</script>
+</body>
+</html>

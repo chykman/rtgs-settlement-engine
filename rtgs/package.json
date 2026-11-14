@@ -1,0 +1,11 @@
+{
+  "name": "rtgs-test-platform",
+  "private": true,
+  "scripts": {
+    "test:core": "npm --prefix services/rtgs-core test",
+    "test:events": "npm --prefix services/event-relay test",
+    "test:gateway": "npm --prefix services/bank-gateway test",
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e.test.js",
+    "test": "npm run test:core && npm run test:events && npm run test:gateway && npm run test:e2e"
+  }
+}
