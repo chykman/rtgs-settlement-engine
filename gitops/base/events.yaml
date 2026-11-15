@@ -1,0 +1,100 @@
+# Transactional-outbox relay (Postgres -> Kafka) and the idempotent consumer (Kafka -> message_store).
+# Both run from the same image. Health = the worker loop touched /tmp/healthy within 60 s.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-relay
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1                    # keep at 1: the relay's advisory lock keeps per-payment ordering anyway
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: event-relay }
+  template:
+    metadata:
+      labels: { app: event-relay }
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: event-relay
+          image: rtgs-event-relay
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: POSTGRES_PASSWORD } }
+            - { name: DATABASE_URL, value: "postgres://rtgs:$(POSTGRES_PASSWORD)@db:5432/rtgs" }
+            - { name: KAFKA_BROKERS, value: "kafka:9092" }
+            - { name: KAFKA_SECURITY_PROTOCOL, value: SASL_PLAINTEXT }
+            - { name: KAFKA_USERNAME, value: rtgs }
+            - name: KAFKA_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: KAFKA_APP_PASSWORD } }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test $(( $(date +%s) - $(stat -c %Y /tmp/healthy) )) -lt 60"]
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-consumer
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: event-consumer }
+  template:
+    metadata:
+      labels: { app: event-consumer }
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: event-consumer
+          image: rtgs-event-relay
+          command: ["node", "src/run-consumer.js"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: POSTGRES_PASSWORD } }
+            - { name: DATABASE_URL, value: "postgres://rtgs:$(POSTGRES_PASSWORD)@db:5432/rtgs" }
+            - { name: KAFKA_BROKERS, value: "kafka:9092" }
+            - { name: KAFKA_SECURITY_PROTOCOL, value: SASL_PLAINTEXT }
+            - { name: KAFKA_USERNAME, value: rtgs }
+            - name: KAFKA_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: KAFKA_APP_PASSWORD } }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test $(( $(date +%s) - $(stat -c %Y /tmp/healthy) )) -lt 60"]
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes: [{ name: tmp, emptyDir: {} }]

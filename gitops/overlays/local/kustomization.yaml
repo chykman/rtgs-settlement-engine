@@ -1,0 +1,25 @@
+# Local testing without ArgoCD or a registry: scripts/build-local.sh builds the images and imports them
+# into k3d, then `make k8s-local` applies this overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: rtgs-core
+    newName: rtgs-core
+    newTag: dev
+  - name: rtgs-gateway
+    newName: rtgs-gateway
+    newTag: dev
+  - name: rtgs-event-relay
+    newName: rtgs-event-relay
+    newTag: dev
+  - name: rtgs-kafka
+    newName: rtgs-kafka
+    newTag: dev
+  - name: rtgs-db
+    newName: rtgs-db
+    newTag: dev
+  - name: rtgs-web
+    newName: rtgs-web
+    newTag: dev

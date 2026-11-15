@@ -1,0 +1,78 @@
+# Single-broker KRaft Kafka (the repo's own SASL/PLAIN image). Simulation only: replication factor 1.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels: { app: kafka }
+spec:
+  selector: { app: kafka }
+  ports: [{ name: broker, port: 9092 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels: { app: kafka }
+  template:
+    metadata:
+      labels: { app: kafka }
+    spec:
+      enableServiceLinks: false   # a Service called "kafka" would otherwise inject KAFKA_PORT=tcp://...
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: kafka
+          image: rtgs-kafka
+          ports: [{ name: broker, containerPort: 9092 }]
+          env:
+            - name: KAFKA_CLUSTER_ID
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: KAFKA_CLUSTER_ID } }
+            - name: KAFKA_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: KAFKA_ADMIN_PASSWORD } }
+            - name: KAFKA_APP_PASSWORD
+              valueFrom: { secretKeyRef: { name: rtgs-secrets, key: KAFKA_APP_PASSWORD } }
+            - { name: KAFKA_SECURITY_PROTOCOL, value: SASL_PLAINTEXT }
+            - { name: KAFKA_ADVERTISED_HOST, value: kafka }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka }
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            exec:
+              command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092", "--command-config", "/tmp/kafka/client.properties"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30     # up to 5 minutes for the first start
+          readinessProbe:
+            exec:
+              command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092", "--command-config", "/tmp/kafka/client.properties"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9092 }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 200m, memory: 768Mi }
+            limits: { memory: 1280Mi }      # 512 MiB heap + off-heap
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }

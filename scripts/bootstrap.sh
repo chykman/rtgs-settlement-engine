@@ -25,7 +25,23 @@ kubectl apply -n argocd --server-side --force-conflicts \
 kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
 kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=300s
 
-# Root application ("app of apps"): once gitops/root-app.yaml exists, ArgoCD manages everything else.
+# Secrets come from rtgs/.env (never from Git). Without it the pods wait; run `make rtgs-env` then `make up`.
+if [ -f rtgs/.env ]; then
+  bash scripts/create-secrets.sh
+else
+  echo "NOTE: rtgs/.env not found; run 'make rtgs-env' and then 'make secrets' before the pods can start"
+fi
+
+# Let ArgoCD read this (possibly private) repo. GITHUB_TOKEN is the codespace's own token for this repo.
+if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+  kubectl -n argocd create secret generic repo-rtgs \
+    --from-literal=type=git --from-literal=url="https://github.com/${GITHUB_REPOSITORY}.git" \
+    --from-literal=username="${GITHUB_ACTOR:-git}" --from-literal=password="${GITHUB_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n argocd label secret repo-rtgs argocd.argoproj.io/secret-type=repository --overwrite
+fi
+
+# Root application ("app of apps"): ArgoCD manages everything else from Git.
 if [ -f gitops/root-app.yaml ]; then
   kubectl apply -n argocd -f gitops/root-app.yaml
 fi

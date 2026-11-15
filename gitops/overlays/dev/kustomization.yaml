@@ -1,0 +1,31 @@
+# What ArgoCD deploys. CI rewrites every `newTag` below to the commit SHA after it pushes the images
+# (see .github/workflows/ci.yml). Do not edit the tags by hand.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: { kind: "^(Deployment|StatefulSet)$" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value: [{ name: ghcr-pull }]     # only needed while the packages are private; harmless otherwise
+images:
+  - name: rtgs-core
+    newName: ghcr.io/chykman/rtgs-core
+    newTag: bootstrap
+  - name: rtgs-gateway
+    newName: ghcr.io/chykman/rtgs-gateway
+    newTag: bootstrap
+  - name: rtgs-event-relay
+    newName: ghcr.io/chykman/rtgs-event-relay
+    newTag: bootstrap
+  - name: rtgs-kafka
+    newName: ghcr.io/chykman/rtgs-kafka
+    newTag: bootstrap
+  - name: rtgs-db
+    newName: ghcr.io/chykman/rtgs-db
+    newTag: bootstrap
+  - name: rtgs-web
+    newName: ghcr.io/chykman/rtgs-web
+    newTag: bootstrap

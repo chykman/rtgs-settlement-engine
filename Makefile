@@ -40,3 +40,27 @@ rtgs-logs:
 
 rtgs-down:        ## stop the stack (add -v by hand to also wipe data)
 	cd rtgs && docker compose down
+
+# ---- Kubernetes (k3d) ----
+.PHONY: secrets k8s-build k8s-local k8s-local-down k8s-status k8s-logs
+
+secrets:          ## (re)create cluster secrets from rtgs/.env
+	bash scripts/create-secrets.sh
+
+k8s-build:        ## build the images locally and import them into k3d
+	bash scripts/build-local.sh
+
+k8s-local:        ## deploy the local overlay WITHOUT ArgoCD (do not combine with the ArgoCD app)
+	bash scripts/create-secrets.sh
+	kubectl apply -k gitops/overlays/local
+	kubectl -n rtgs rollout status statefulset/db statefulset/kafka --timeout=300s
+	kubectl -n rtgs rollout status deploy --timeout=300s
+
+k8s-local-down:
+	kubectl delete -k gitops/overlays/local --ignore-not-found
+
+k8s-status:
+	kubectl -n rtgs get pods,svc,ingress,pvc
+
+k8s-logs:
+	kubectl -n rtgs logs -l 'app in (kafka,event-relay,event-consumer,rtgs-core)' --tail=50 --prefix

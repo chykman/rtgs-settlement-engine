@@ -1,0 +1,140 @@
+name: CI/CD
+
+# Pull requests: lint + test + build + scan (nothing is pushed).
+# Push to main: the same, then push images to ghcr.io and bump the image tags in gitops/overlays/dev.
+# ArgoCD (running in the codespace's cluster) picks the new tags up from Git; nothing connects *into* it.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ["gitops/**", "**/*.md"]   # the tag-bump commit must not trigger another run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hadolint
+        run: |
+          for f in rtgs/services/rtgs-core/Dockerfile rtgs/services/bank-gateway/Dockerfile \
+                   rtgs/services/event-relay/Dockerfile rtgs/services/kafka/Dockerfile \
+                   rtgs/services/db/Dockerfile rtgs/web/Dockerfile; do
+            echo "== $f"
+            docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --failure-threshold warning - < "$f"
+          done
+      - name: Kubernetes manifests build
+        run: |
+          kubectl kustomize gitops/overlays/dev   > /dev/null
+          kubectl kustomize gitops/overlays/local > /dev/null
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rtgs
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: rtgs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rtgs -d rtgs"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://rtgs:ci-only@127.0.0.1:5432/rtgs
+    defaults:
+      run:
+        working-directory: rtgs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            rtgs/services/rtgs-core/package-lock.json
+            rtgs/services/bank-gateway/package-lock.json
+            rtgs/services/event-relay/package-lock.json
+      - run: npm ci --prefix services/rtgs-core
+      - run: npm ci --prefix services/bank-gateway
+      - run: npm ci --prefix services/event-relay
+      - run: npm test
+      - name: Audit production dependencies
+        run: |
+          for s in rtgs-core bank-gateway event-relay; do
+            npm audit --omit=dev --audit-level=high --prefix services/$s
+          done
+
+  image:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: core,        context: rtgs/services/rtgs-core,    file: rtgs/services/rtgs-core/Dockerfile,    scan_exit: "1" }
+          - { name: gateway,     context: rtgs/services/bank-gateway, file: rtgs/services/bank-gateway/Dockerfile, scan_exit: "1" }
+          - { name: event-relay, context: rtgs/services/event-relay,  file: rtgs/services/event-relay/Dockerfile,  scan_exit: "1" }
+          - { name: web,         context: rtgs/web,                   file: rtgs/web/Dockerfile,                   scan_exit: "1" }
+          - { name: db,          context: rtgs/services,              file: rtgs/services/db/Dockerfile,           scan_exit: "1" }
+          # Report-only: the pinned Kafka release bundles third-party jars that may carry fixed CVEs.
+          - { name: kafka,       context: rtgs/services/kafka,        file: rtgs/services/kafka/Dockerfile,        scan_exit: "0" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          docker build --build-arg GIT_SHA="${GITHUB_SHA::12}" \
+            -t "rtgs-${{ matrix.name }}:ci" -f "${{ matrix.file }}" "${{ matrix.context }}"
+      - name: Scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rtgs-${{ matrix.name }}:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: ${{ matrix.scan_exit }}
+      - name: Push to ghcr.io (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          img="${REGISTRY}/rtgs-${{ matrix.name }}"
+          docker tag "rtgs-${{ matrix.name }}:ci" "${img}:${GITHUB_SHA::12}"
+          docker push "${img}:${GITHUB_SHA::12}"
+
+  release:
+    # Point the dev overlay at the images just pushed. ArgoCD notices the commit and syncs it.
+    needs: [image]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bump image tags
+        run: |
+          sed -i "s/newTag: .*/newTag: ${GITHUB_SHA::12}/" gitops/overlays/dev/kustomization.yaml
+          git diff --stat
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gitops/overlays/dev/kustomization.yaml
+          git commit -m "release: rtgs images ${GITHUB_SHA::12}" || { echo "nothing to commit"; exit 0; }
+          git push
