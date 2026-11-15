@@ -1,6 +1,8 @@
 ARG JAVA_IMAGE=eclipse-temurin:17-jre-alpine
 
 # ---- Stage 1: download, verify and trim the Kafka distribution -----------------------------------
+# hadolint ignore=DL3006
+# hadolint ignore=DL3006
 FROM ${JAVA_IMAGE} AS fetch
 ARG KAFKA_VERSION=3.6.2
 ARG SCALA_VERSION=2.13
@@ -19,6 +21,8 @@ RUN set -eux; \
     rm -rf /opt/kafka/bin/windows /opt/kafka/site-docs
 
 # ---- Stage 2: minimal runtime ---------------------------------------------------------------------
+# hadolint ignore=DL3006
+# hadolint ignore=DL3006
 FROM ${JAVA_IMAGE} AS production
 # Kafka's shell scripts need bash; nothing else is added to the runtime image.
 # hadolint ignore=DL3018
